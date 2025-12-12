@@ -1,0 +1,9 @@
+{
+  "name": "Vision2Action Web",
+  "description": "A high-contrast, accessible visual assistant web application using Gemini Flash to describe surroundings and detect obstacles.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}
