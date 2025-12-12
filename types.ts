@@ -13,3 +13,9 @@ export interface CameraHandle {
   startCamera: () => Promise<void>;
   stopCamera: () => void;
 }
+
+export interface MemoryTag {
+  id: string;
+  name: string;
+  timestamp: number;
+}

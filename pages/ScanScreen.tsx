@@ -40,7 +40,8 @@ export const ScanScreen: React.FC = () => {
       
       setLastImage(imageBase64);
 
-      const description = await analyzeImage(imageBase64);
+      // Pass empty array for tags in single scan mode
+      const description = await analyzeImage(imageBase64, []);
       
       setLastResult(description);
       speak(description);

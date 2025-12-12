@@ -1,9 +1,16 @@
 import { GoogleGenAI } from "@google/genai";
+import { MemoryTag } from "../types";
 
 // Initialize Gemini Client
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-const NAV_SYSTEM_INSTRUCTION = `
+const getNavInstruction = (tags: MemoryTag[]) => {
+  const tagList = tags.map(t => `"${t.name}"`).join(', ');
+  const memoryContext = tags.length > 0 
+    ? `\n5. MEMORY: The user has marked these specific locations: [${tagList}]. If you see one of them clearly, announce "You are near your ${tags[0].name}" or similar.` 
+    : "";
+
+  return `
 You are a pair of eyes for a blind user. 
 Analyze the image stream and provide immediate navigation cues.
 
@@ -11,8 +18,9 @@ Priorities:
 1. HAZARDS: Say "STOP" or "CAUTION" if there is immediate danger (stairs, traffic, hole).
 2. PATH: Describe where to walk (e.g., "Path clear straight ahead", "Turn slightly right").
 3. OBJECTS: Mention only obstacles in the way.
-4. STYLE: Use complete, concise sentences. Avoid bullet points. Do not cut off sentences.
+4. STYLE: Use complete, concise sentences. Avoid bullet points. Do not cut off sentences.${memoryContext}
 `;
+};
 
 const QA_SYSTEM_INSTRUCTION = `
 You are a helpful visual assistant for a blind user. 
@@ -22,7 +30,7 @@ If the answer is not visible, say so.
 Keep answers under 2 sentences.
 `;
 
-export const analyzeImage = async (base64Image: string): Promise<string> => {
+export const analyzeImage = async (base64Image: string, tags: MemoryTag[] = []): Promise<string> => {
   try {
     if (!base64Image || base64Image.length < 100) {
         console.warn("Invalid base64 image received");
@@ -46,8 +54,8 @@ export const analyzeImage = async (base64Image: string): Promise<string> => {
         }
       ],
       config: {
-        systemInstruction: NAV_SYSTEM_INSTRUCTION,
-        maxOutputTokens: 300, // Increased to ensure full sentences
+        systemInstruction: getNavInstruction(tags),
+        maxOutputTokens: 300, 
         temperature: 0.4,
       }
     });

@@ -1,10 +1,11 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { CameraView } from '../components/CameraView';
-import { CameraHandle, AppRoute } from '../types';
+import { CameraHandle, AppRoute, MemoryTag } from '../types';
 import { analyzeImage, askAboutImage } from '../services/geminiService';
 import { speak, vibrate, playEarcon } from '../services/accessibilityService';
-import { Mic, StopCircle, Navigation, Loader2 } from 'lucide-react';
+import { getTags, addTag, removeTag } from '../services/memoryService';
+import { Mic, StopCircle, Navigation, Loader2, Tag as TagIcon, Trash2 } from 'lucide-react';
 
 export const ContinuousScreen: React.FC = () => {
   const navigate = useNavigate();
@@ -15,17 +16,18 @@ export const ContinuousScreen: React.FC = () => {
   const [status, setStatus] = useState<string>("Initializing...");
   const [isListening, setIsListening] = useState(false);
   const [lastImage, setLastImage] = useState<string | null>(null);
+  const [tags, setTags] = useState<MemoryTag[]>([]);
 
   // Refs for loop management
   const isLoopRunning = useRef(true);
   const processingRef = useRef(false);
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   
   // Refs for Interaction
-  const longPressTimer = useRef<NodeJS.Timeout | null>(null);
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const recognitionRef = useRef<any>(null);
   const isLongPressHandled = useRef(false);
-  const hasRecognitionResult = useRef(false); // New ref to track success
+  const hasRecognitionResult = useRef(false);
 
   // --- Voice Recognition Logic ---
 
@@ -36,7 +38,6 @@ export const ContinuousScreen: React.FC = () => {
       return;
     }
 
-    // Cancel any existing speech immediately
     window.speechSynthesis.cancel();
     
     const recognition = new SpeechRecognition();
@@ -44,7 +45,6 @@ export const ContinuousScreen: React.FC = () => {
     recognition.continuous = false; 
     recognition.interimResults = false;
     
-    // Reset result tracker
     hasRecognitionResult.current = false;
 
     recognition.onstart = () => {
@@ -55,14 +55,10 @@ export const ContinuousScreen: React.FC = () => {
     };
 
     recognition.onend = () => {
-      // If recognition ends (either naturally or forced by stop)
-      // Check if we got a result. If not, reset everything.
       if (!hasRecognitionResult.current) {
          setIsListening(false);
          if (processingRef.current) {
-            // If we were processing (locked), unlock it because we failed to get a query
             processingRef.current = false;
-            // speak("Cancelled."); // Optional: too chatty?
             scheduleNextFrame(500);
          }
       }
@@ -72,7 +68,7 @@ export const ContinuousScreen: React.FC = () => {
       const transcript = event.results[0][0].transcript.trim();
       if (transcript) {
         hasRecognitionResult.current = true;
-        handleUserQuestion(transcript);
+        handleVoiceInput(transcript);
       }
     };
 
@@ -80,8 +76,6 @@ export const ContinuousScreen: React.FC = () => {
       console.warn("Speech Error", e);
       setIsListening(false);
       hasRecognitionResult.current = false; 
-      
-      // If user just denied permission or no speech, recover gracefully
       processingRef.current = false;
       scheduleNextFrame(1000);
       
@@ -101,27 +95,59 @@ export const ContinuousScreen: React.FC = () => {
 
   const stopVoiceQuery = () => {
     if (recognitionRef.current) {
-      // stopping triggers onend
       try {
         recognitionRef.current.stop();
-      } catch (e) {
-        // ignore
-      }
+      } catch (e) {}
       recognitionRef.current = null;
     }
   };
 
   // --- Logic Handlers ---
 
-  const handleUserQuestion = async (question: string) => {
+  const handleVoiceInput = async (transcript: string) => {
     setIsListening(false);
-    processingRef.current = true; // Keep loop locked while answering
+    processingRef.current = true; // Keep loop locked
     
     playEarcon('processing'); 
+    
+    // Check for "Remember/Mark" intent
+    const lower = transcript.toLowerCase();
+    if (lower.startsWith("remember") || lower.startsWith("mark this") || lower.includes("mark as")) {
+       handleMemoryCommand(transcript);
+    } else {
+       handleUserQuestion(transcript);
+    }
+  };
+
+  const handleMemoryCommand = async (transcript: string) => {
+    setStatus(`Tagging: "${transcript}"`);
+    
+    // Simulate brief processing delay
+    await new Promise(r => setTimeout(r, 500));
+
+    const result = addTag(transcript);
+    
+    if (result.success) {
+      setTags(getTags()); // Update UI
+      speak(result.message);
+      setStatus(result.message);
+      vibrate([50, 50]);
+    } else {
+      speak(result.message);
+      setStatus(result.message);
+      vibrate(500); // Long vibrate for error
+    }
+
+    setTimeout(() => {
+      processingRef.current = false;
+      scheduleNextFrame(1000); 
+    }, 2000);
+  };
+
+  const handleUserQuestion = async (question: string) => {
     setStatus(`"${question}"`);
 
     try {
-      // Capture fresh image or use last known
       const currentImage = cameraRef.current?.captureFrame() || lastImage;
 
       if (currentImage) {
@@ -134,19 +160,16 @@ export const ContinuousScreen: React.FC = () => {
     } catch (e) {
       speak("Sorry, I couldn't answer.");
     } finally {
-      // Give time for the answer to be spoken before resuming nav
-      // We unlock navigation after a fixed delay to ensure the answer is heard
       setTimeout(() => {
         processingRef.current = false;
         scheduleNextFrame(1000); 
-      }, 4000); // Increased delay to 4s to allow answer to finish
+      }, 4000); 
     }
   };
 
   const processNavigationFrame = async () => {
     if (!isLoopRunning.current) return;
     
-    // Don't process nav frames if we are listening or answering a question
     if (processingRef.current || isListening) {
       scheduleNextFrame(500);
       return;
@@ -159,9 +182,9 @@ export const ContinuousScreen: React.FC = () => {
       
       if (imageBase64) {
         setLastImage(imageBase64); 
-        const description = await analyzeImage(imageBase64);
+        // Pass the active tags to the AI analysis
+        const description = await analyzeImage(imageBase64, tags);
         
-        // Only speak if user hasn't interrupted
         if (description && isLoopRunning.current && !isListening && processingRef.current) {
           setStatus(description);
           speak(description);
@@ -170,11 +193,8 @@ export const ContinuousScreen: React.FC = () => {
     } catch (e) {
       console.warn("Nav frame skipped", e);
     } finally {
-      // Note: We don't unlock processingRef here immediately if we want to ensure speech finishes?
-      // Actually, analyzeImage returns text. speak() is async in nature (fire and forget).
-      // We unlock processingRef so next frame can start processing, but maybe we want a gap?
       processingRef.current = false;
-      scheduleNextFrame(4000); // 4s interval
+      scheduleNextFrame(4000); 
     }
   };
 
@@ -185,23 +205,25 @@ export const ContinuousScreen: React.FC = () => {
     }
   };
 
-  // --- Interaction Handlers (Tap vs Hold) ---
+  const handleDeleteTag = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    removeTag(id);
+    setTags(getTags());
+    speak("Tag deleted.");
+  };
+
+  // --- Interaction Handlers ---
 
   const handlePointerDown = (e: React.MouseEvent | React.TouchEvent) => {
-    // Crucial: stop existing speech immediately when user touches screen
-    // This makes the UI feel responsive
-    if (isActive) {
-        window.speechSynthesis.cancel();
-    }
+    if (isActive) window.speechSynthesis.cancel();
     
     isLongPressHandled.current = false;
     
     longPressTimer.current = setTimeout(() => {
-      // Long Press Detected
       isLongPressHandled.current = true;
-      processingRef.current = true; // Lock Nav Loop immediately so no new analysis starts
+      processingRef.current = true; 
       startVoiceQuery();
-    }, 500); // 500ms threshold
+    }, 500); 
   };
 
   const handlePointerUp = (e: React.MouseEvent | React.TouchEvent) => {
@@ -211,11 +233,8 @@ export const ContinuousScreen: React.FC = () => {
     }
 
     if (isLongPressHandled.current) {
-      // User was holding, now released -> Stop listening and wait for result
       stopVoiceQuery();
-      // processingRef.current remains true until onend or handleUserQuestion resolves it
     } else {
-      // Short tap detected -> Toggle Session
       toggleSession();
     }
   };
@@ -227,7 +246,6 @@ export const ContinuousScreen: React.FC = () => {
       vibrate([50, 50]);
     } else {
       setIsActive(true);
-      // speak handled in effect
       vibrate(50);
     }
   };
@@ -235,10 +253,11 @@ export const ContinuousScreen: React.FC = () => {
   // --- Effects ---
 
   useEffect(() => {
+    setTags(getTags()); // Load tags on mount
+    
     if (isActive) {
       isLoopRunning.current = true;
       speak("Navigation Active.");
-      // Small delay to let "Navigation Active" start speaking before we grab camera
       timerRef.current = setTimeout(processNavigationFrame, 1000);
     } else {
       isLoopRunning.current = false;
@@ -262,6 +281,26 @@ export const ContinuousScreen: React.FC = () => {
         <CameraView ref={cameraRef} />
       </div>
 
+      {/* Tags Overlay */}
+      {tags.length > 0 && (
+         <div className="absolute top-16 left-0 right-0 z-20 flex justify-center gap-2 pointer-events-none px-4">
+           {tags.map(tag => (
+             <div key={tag.id} className="bg-blue-600/90 text-white text-xs px-3 py-1 rounded-full backdrop-blur flex items-center shadow-lg animate-in fade-in zoom-in duration-300">
+               <TagIcon size={10} className="mr-1" />
+               <span className="font-bold mr-2 uppercase">{tag.name}</span>
+               {/* Delete button needs pointer-events-auto */}
+               <button 
+                 onClick={(e) => handleDeleteTag(tag.id, e)}
+                 className="pointer-events-auto p-1 hover:text-red-300 active:scale-90"
+                 aria-label={`Delete ${tag.name}`}
+               >
+                 <Trash2 size={12} />
+               </button>
+             </div>
+           ))}
+         </div>
+      )}
+
       {/* Main Interactive Layer */}
       <div 
         onMouseDown={handlePointerDown}
@@ -269,13 +308,12 @@ export const ContinuousScreen: React.FC = () => {
         onMouseLeave={handlePointerUp}
         onTouchStart={handlePointerDown}
         onTouchEnd={handlePointerUp}
-        onContextMenu={(e) => e.preventDefault()} // Prevent context menu
+        onContextMenu={(e) => e.preventDefault()}
         className="absolute inset-0 z-10 w-full h-full flex flex-col items-center justify-center p-6 bg-transparent active:bg-white/5 transition-colors cursor-pointer touch-none"
         role="button"
         aria-label={isListening ? "Listening" : (isActive ? "Stop Navigation" : "Start Navigation")}
         tabIndex={0}
       >
-        {/* Status Display */}
         <div className={`
            p-8 rounded-3xl backdrop-blur-md border-4 shadow-2xl max-w-sm w-full
            flex flex-col items-center text-center gap-4 transition-all duration-300
@@ -303,19 +341,18 @@ export const ContinuousScreen: React.FC = () => {
           )}
         </div>
 
-        {/* Footer Instruction */}
         <div className="absolute bottom-10 opacity-80 bg-black/60 px-6 py-3 rounded-full border border-white/10 backdrop-blur">
           <p className="text-white font-bold tracking-wide">
-            Tap to {isActive ? "Pause" : "Start"} • Hold to Ask
+             Hold to "Mark this as..."
           </p>
         </div>
       </div>
 
-      {/* Back Button (Small, top left) */}
+      {/* Back Button */}
       <div className="absolute top-4 left-4 z-20 pointer-events-none">
         <button 
           onClick={(e) => {
-            e.stopPropagation(); // Only works if pointer events enabled
+            e.stopPropagation();
             navigate(AppRoute.HOME);
           }}
           className="p-3 bg-slate-800 rounded-full text-white border border-slate-600 pointer-events-auto"
