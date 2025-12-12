@@ -1,8 +1,7 @@
 import React, { useEffect } from 'react';
-import { HashRouter, Routes, Route } from 'react-router-dom';
+import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { HomeScreen } from './pages/HomeScreen';
-import { ScanScreen } from './pages/ScanScreen';
-import { ContinuousScreen } from './pages/ContinuousScreen';
+import { ContinuousScreen } from './pages/ContinuousScreen'; // Acts as the Main Navigation Screen
 import { AppRoute } from './types';
 
 export default function App() {
@@ -20,15 +19,14 @@ export default function App() {
   return (
     <div 
       className="bg-slate-900 text-white w-full overflow-hidden mx-auto shadow-2xl relative"
-      style={{ height: 'var(--app-height, 100vh)', maxWidth: '600px' }} // Restrict width on desktop for mobile feel
+      style={{ height: 'var(--app-height, 100vh)', maxWidth: '600px' }} // Restrict width on desktop
     >
-      <HashRouter>
+      <MemoryRouter>
         <Routes>
           <Route path={AppRoute.HOME} element={<HomeScreen />} />
-          <Route path={AppRoute.SCAN} element={<ScanScreen />} />
-          <Route path={AppRoute.CONTINUOUS} element={<ContinuousScreen />} />
+          <Route path={AppRoute.NAVIGATION} element={<ContinuousScreen />} />
         </Routes>
-      </HashRouter>
+      </MemoryRouter>
     </div>
   );
 }

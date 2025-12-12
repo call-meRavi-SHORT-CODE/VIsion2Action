@@ -1,7 +1,6 @@
 export enum AppRoute {
   HOME = '/',
-  SCAN = '/scan',
-  CONTINUOUS = '/continuous'
+  NAVIGATION = '/navigation'
 }
 
 export interface AnalysisResult {

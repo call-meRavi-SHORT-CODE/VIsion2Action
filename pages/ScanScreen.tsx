@@ -1,89 +1,70 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { CameraView } from '../components/CameraView';
+import { BigButton } from '../components/BigButton';
 import { CameraHandle, AppRoute } from '../types';
 import { analyzeImage, askAboutImage } from '../services/geminiService';
 import { speak, vibrate, playEarcon } from '../services/accessibilityService';
-import { ArrowLeft, Mic, StopCircle } from 'lucide-react';
-
-// Polyfill types for SpeechRecognition
-declare global {
-  interface Window {
-    webkitSpeechRecognition: any;
-    SpeechRecognition: any;
-  }
-}
-
-type InteractionState = 'IDLE' | 'SCANNING' | 'SPEAKING' | 'LISTENING' | 'PROCESSING_QA';
+import { ArrowLeft, Loader2, Mic } from 'lucide-react';
 
 export const ScanScreen: React.FC = () => {
   const navigate = useNavigate();
   const cameraRef = useRef<CameraHandle>(null);
-  
-  // State
-  const [state, setState] = useState<InteractionState>('IDLE');
-  const [displayText, setDisplayText] = useState("Tap anywhere to start conversation");
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const [lastResult, setLastResult] = useState<string>("");
   const [lastImage, setLastImage] = useState<string | null>(null);
-  
-  // Refs for loop control
-  const recognitionRef = useRef<any>(null);
-  const isLoopActiveRef = useRef(false);
 
-  // Stop everything (Speech, TTS, Loop)
-  const stopInteraction = () => {
-    isLoopActiveRef.current = false;
-    if (window.speechSynthesis) window.speechSynthesis.cancel();
-    if (recognitionRef.current) {
-      try { recognitionRef.current.stop(); } catch(e) {}
-    }
-    setState('IDLE');
-    setDisplayText("Tap to scan again.");
-    playEarcon('stop');
-    vibrate(50);
-  };
+  // Cleanup speech on unmount
+  useEffect(() => {
+    return () => {
+      if (window.speechSynthesis) window.speechSynthesis.cancel();
+    };
+  }, []);
 
-  const startScan = async () => {
-    isLoopActiveRef.current = true;
-    setState('SCANNING');
-    setDisplayText("Scanning scene...");
+  const handleScan = async () => {
+    if (isProcessing || isListening) return;
+    
+    // Feedback
     vibrate(50);
-    speak("Scanning.");
+    speak("Scanning...");
+    setIsProcessing(true);
+    setLastResult("");
 
     try {
-      // Small delay to let TTS start
-      await new Promise(r => setTimeout(r, 500));
-      
       const imageBase64 = cameraRef.current?.captureFrame();
-      if (!imageBase64) throw new Error("Camera failed");
+      
+      if (!imageBase64) {
+        throw new Error("Could not capture frame");
+      }
       
       setLastImage(imageBase64);
-      
-      const description = await analyzeImage(imageBase64);
-      setDisplayText(description);
-      
-      // Start the conversation loop
-      setState('SPEAKING');
-      speak(description, () => {
-        // Callback when description is done speaking
-        if (isLoopActiveRef.current) {
-          startListening();
-        }
-      });
 
-    } catch (e) {
-      console.error(e);
-      speak("Error. Please try again.");
-      setState('IDLE');
+      const description = await analyzeImage(imageBase64);
+      
+      setLastResult(description);
+      speak(description);
+      vibrate([50, 50]); // Double tap for success
+
+    } catch (error) {
+      console.error(error);
+      speak("Error capturing image.");
+      setLastResult("Error: Could not scan.");
+      vibrate(500); 
+    } finally {
+      setIsProcessing(false);
     }
   };
 
-  const startListening = () => {
-    if (!isLoopActiveRef.current) return;
+  const handleAskQuestion = () => {
+    if (!lastImage) {
+      speak("Please scan a scene first.");
+      return;
+    }
 
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      speak("Voice control not available.");
-      setState('IDLE');
+      speak("Voice features are not supported on this device.");
       return;
     }
 
@@ -93,125 +74,132 @@ export const ScanScreen: React.FC = () => {
     recognition.maxAlternatives = 1;
 
     recognition.onstart = () => {
-      setState('LISTENING');
-      setDisplayText("Listening for question...");
-      playEarcon('listen'); // Ding!
+      setIsListening(true);
+      playEarcon('listen'); // Audio cue
+      setLastResult("Listening...");
     };
 
     recognition.onend = () => {
-      // If we are still in LISTENING state when it ends, it means no speech was detected
-      // or it timed out. We stop the loop to avoid annoying the user.
-      if (isLoopActiveRef.current && state === 'LISTENING') {
-        setState('IDLE');
-        setDisplayText("Conversation ended. Tap to restart.");
-        playEarcon('stop');
-      }
+      setIsListening(false);
     };
 
     recognition.onresult = async (event: any) => {
       const question = event.results[0][0].transcript;
-      if (!question) return;
-
-      setState('PROCESSING_QA');
-      setDisplayText(`"${question}"`);
-      playEarcon('processing'); // Blip
-      
-      if (lastImage) {
-        // Send to Gemini
-        const answer = await askAboutImage(lastImage, question);
-        setDisplayText(answer);
+      if (question) {
+        // Stop listening state immediately so UI updates
+        setIsListening(false);
+        setIsProcessing(true);
         
-        setState('SPEAKING');
-        speak(answer, () => {
-          // Loop back to listening after answer
-          if (isLoopActiveRef.current) {
-            startListening();
-          }
-        });
+        playEarcon('processing');
+        speak(`Asking: ${question}`);
+        setLastResult(`"${question}"`);
+        
+        try {
+          const answer = await askAboutImage(lastImage, question);
+          setLastResult(answer);
+          speak(answer);
+        } catch (e) {
+          speak("Sorry, I couldn't get an answer.");
+        } finally {
+          setIsProcessing(false);
+        }
       }
     };
 
-    recognition.onerror = () => {
-      setState('IDLE');
-      setDisplayText("Microphone error. Tap to retry.");
+    recognition.onerror = (e: any) => {
+      setIsListening(false);
+      playEarcon('stop'); // Error cue
+      // If no speech was detected, just return to state
+      if (e.error === 'no-speech') {
+        speak("I didn't hear anything.");
+      } else {
+        speak("Microphone error.");
+      }
     };
 
-    recognitionRef.current = recognition;
     recognition.start();
   };
 
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      isLoopActiveRef.current = false;
-      if (window.speechSynthesis) window.speechSynthesis.cancel();
-      if (recognitionRef.current) {
-        try { recognitionRef.current.stop(); } catch(e) {}
-      }
-    };
-  }, []);
-
-  const getBackgroundColor = () => {
-    switch(state) {
-      case 'IDLE': return 'bg-slate-900';
-      case 'SCANNING': return 'bg-blue-900';
-      case 'SPEAKING': return 'bg-slate-800';
-      case 'LISTENING': return 'bg-red-900'; // Distinct color when mic is open
-      case 'PROCESSING_QA': return 'bg-purple-900';
-      default: return 'bg-slate-900';
-    }
-  };
-
   return (
-    <div className={`flex flex-col h-full ${getBackgroundColor()} transition-colors duration-500 p-4 relative`}>
-      
+    <div className="flex flex-col h-full bg-slate-900 p-4 gap-4">
       {/* Header */}
-      <div className="flex items-center justify-between z-20 pointer-events-none">
+      <div className="flex items-center justify-between py-2">
         <button 
-          onClick={() => {
-            stopInteraction();
-            navigate(AppRoute.HOME);
-          }}
-          className="p-4 bg-slate-800 rounded-full text-white pointer-events-auto border-2 border-slate-600"
+          onClick={() => navigate(AppRoute.HOME)}
+          className="p-4 bg-slate-800 rounded-full text-white hover:bg-slate-700 border-2 border-slate-700 focus:border-yellow-400"
           aria-label="Go Back"
         >
           <ArrowLeft size={32} />
         </button>
-        {state === 'LISTENING' && <Mic className="text-red-400 animate-pulse" size={32} />}
+        <h1 className="text-2xl font-bold text-white">Single Scan</h1>
+        <div className="w-16" /> 
       </div>
 
-      {/* Main Touch Area - Covers entire background */}
+      {/* Camera View */}
+      <div className="flex-1 rounded-2xl overflow-hidden border-4 border-slate-700 relative shadow-inner bg-black">
+        <CameraView ref={cameraRef} />
+        
+        {/* Processing/Listening Overlay */}
+        {(isProcessing || isListening) && (
+          <div className="absolute inset-0 bg-black/70 flex items-center justify-center z-10 backdrop-blur-sm">
+            <div className="flex flex-col items-center p-6 text-center">
+              {isListening ? (
+                <>
+                  <Mic className="w-20 h-20 text-red-500 animate-pulse mb-6" />
+                  <p className="text-white text-3xl font-bold">Listening...</p>
+                </>
+              ) : (
+                <>
+                  <Loader2 className="w-20 h-20 text-yellow-400 animate-spin mb-6" />
+                  <p className="text-yellow-400 text-2xl font-bold">Thinking...</p>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Text Output Box */}
       <div 
-        onClick={() => {
-          if (state === 'IDLE') startScan();
-          else stopInteraction();
-        }}
-        className="absolute inset-0 z-10 flex flex-col items-center justify-center p-8 text-center cursor-pointer"
-        role="button"
-        aria-label={state === 'IDLE' ? "Start Scan" : "Stop Conversation"}
+        className="bg-slate-800 p-4 rounded-xl min-h-[5rem] flex items-center justify-center border-2 border-slate-600"
+        aria-live="polite"
       >
-        {/* Invisible camera needed for capture */}
-        <div className="opacity-0 absolute pointer-events-none h-1 w-1 overflow-hidden">
-          <CameraView ref={cameraRef} />
-        </div>
+        <p className="text-xl text-white font-medium text-center leading-relaxed">
+          {lastResult || "Ready to scan."}
+        </p>
+      </div>
 
-        {/* Dynamic Status Text */}
-        <div className="bg-black/40 backdrop-blur-sm p-6 rounded-3xl border-2 border-white/10 max-w-sm pointer-events-none select-none">
-          <p className={`font-bold text-white leading-tight transition-all duration-300 ${state === 'IDLE' ? 'text-3xl' : 'text-2xl'}`}>
-            {displayText}
-          </p>
-        </div>
-
-        {/* Instructions */}
-        <div className="absolute bottom-12 pointer-events-none opacity-60">
-           {state === 'IDLE' 
-             ? <p className="text-xl font-medium text-yellow-400 uppercase tracking-widest animate-pulse">Tap Screen to Scan</p>
-             : <div className="flex flex-col items-center text-slate-300">
-                 <StopCircle size={48} className="mb-2" />
-                 <p className="uppercase font-bold">Tap to Stop</p>
-               </div>
-           }
-        </div>
+      {/* Controls Area */}
+      <div className="h-32">
+        {lastImage ? (
+           <div className="flex gap-4 h-full">
+             <div className="flex-1">
+               <BigButton 
+                 title="ASK QUESTION" 
+                 subtitle="Use Mic"
+                 onPress={handleAskQuestion} 
+                 color="secondary"
+                 fullHeight
+               />
+             </div>
+             <div className="flex-1">
+                <BigButton 
+                  title="NEW SCAN" 
+                  subtitle="Capture"
+                  onPress={handleScan} 
+                  fullHeight
+                />
+             </div>
+           </div>
+        ) : (
+          <BigButton 
+            title={isProcessing ? "PROCESSING..." : "SCAN SCENE"} 
+            subtitle="Capture Image"
+            onPress={handleScan} 
+            disabled={isProcessing}
+            fullHeight
+          />
+        )}
       </div>
     </div>
   );

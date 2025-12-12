@@ -3,90 +3,93 @@ import { GoogleGenAI } from "@google/genai";
 // Initialize Gemini Client
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-const SYSTEM_INSTRUCTION = `
-You are a real-time navigation assistant for a blind user.
-Your input is a stream of camera frames from the user's perspective.
-Analyze the image and output a concise spoken instruction.
+const NAV_SYSTEM_INSTRUCTION = `
+You are a pair of eyes for a blind user. 
+Analyze the image stream and provide immediate navigation cues.
 
-Rules:
-1. DANGER CHECK: If there are immediate hazards (stairs, drop-offs, traffic, blocking obstacles), start with "CAUTION" or "STOP".
-2. NAVIGATION: Describe the path ahead or relative position of key items using clock directions (e.g., "Clear path", "Door at 2 o'clock", "Chair ahead").
-3. TEXT: If there is a large sign (e.g., "Exit", "Restroom"), read it.
-4. BREVITY: Keep it under 15 words.
-5. Do not describe background details unless they block the path.
+Priorities:
+1. HAZARDS: Say "STOP" or "CAUTION" if there is immediate danger (stairs, traffic, hole).
+2. PATH: Describe where to walk (e.g., "Path clear straight ahead", "Turn slightly right").
+3. OBJECTS: Mention only obstacles in the way.
+4. BREVITY: Maximum 10 words. concise. clear.
 `;
 
 const QA_SYSTEM_INSTRUCTION = `
 You are a helpful visual assistant for a blind user. 
-The user will ask a specific question about the image provided.
-Answer conversationally, concisely, and directly.
-If the answer is not visible in the image, clearly state that you cannot see it.
-Keep answers under 2 sentences unless detailed description is requested.
+The user is asking a question about the current scene.
+Answer conversationally and directly.
+If the answer is not visible, say so.
+Keep answers under 2 sentences.
 `;
 
 export const analyzeImage = async (base64Image: string): Promise<string> => {
   try {
-    // Remove data URL prefix if present for clean base64
-    const cleanBase64 = base64Image.split(',')[1] || base64Image;
+    if (!base64Image || base64Image.length < 100) {
+        console.warn("Invalid base64 image received");
+        return "";
+    }
+
+    // Remove data URL prefix if present (look for the comma after base64)
+    const cleanBase64 = base64Image.includes('base64,') 
+        ? base64Image.split('base64,')[1] 
+        : base64Image;
 
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
-      contents: {
-        parts: [
-          {
-            inlineData: {
-              mimeType: 'image/jpeg',
-              data: cleanBase64
-            }
-          },
-          {
-            text: "Provide navigation assistance for this scene."
-          }
-        ]
-      },
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { inlineData: { mimeType: 'image/jpeg', data: cleanBase64 } },
+            { text: "Describe the path and hazards." }
+          ]
+        }
+      ],
       config: {
-        systemInstruction: SYSTEM_INSTRUCTION,
-        maxOutputTokens: 80, 
+        systemInstruction: NAV_SYSTEM_INSTRUCTION,
+        maxOutputTokens: 100,
         temperature: 0.4,
       }
     });
 
     return response.text || "";
   } catch (error) {
-    console.error("Gemini API Error:", error);
+    console.error("Gemini Nav Error Details:", JSON.stringify(error, null, 2));
     return "";
   }
 };
 
 export const askAboutImage = async (base64Image: string, question: string): Promise<string> => {
   try {
-    const cleanBase64 = base64Image.split(',')[1] || base64Image;
+     if (!base64Image || base64Image.length < 100) {
+        return "I can't see the image clearly.";
+    }
+
+    const cleanBase64 = base64Image.includes('base64,') 
+        ? base64Image.split('base64,')[1] 
+        : base64Image;
 
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
-      contents: {
-        parts: [
-          {
-            inlineData: {
-              mimeType: 'image/jpeg',
-              data: cleanBase64
-            }
-          },
-          {
-            text: question
-          }
-        ]
-      },
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { inlineData: { mimeType: 'image/jpeg', data: cleanBase64 } },
+            { text: question }
+          ]
+        }
+      ],
       config: {
         systemInstruction: QA_SYSTEM_INSTRUCTION,
         maxOutputTokens: 150,
-        temperature: 0.6, // Slightly higher for more natural conversation
+        temperature: 0.6,
       }
     });
 
-    return response.text || "I couldn't generate an answer.";
+    return response.text || "I couldn't see that.";
   } catch (error) {
-    console.error("Gemini Q&A Error:", error);
-    return "I had trouble answering that.";
+    console.error("Gemini Q&A Error Details:", JSON.stringify(error, null, 2));
+    return "I had trouble connecting to the assistant.";
   }
 };

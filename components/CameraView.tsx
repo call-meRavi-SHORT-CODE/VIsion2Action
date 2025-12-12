@@ -30,14 +30,27 @@ export const CameraView = forwardRef<CameraHandle, CameraViewProps>(({ onReady }
       if (videoRef.current) {
         videoRef.current.srcObject = newStream;
         videoRef.current.onloadedmetadata = () => {
-          videoRef.current?.play();
+          videoRef.current?.play().catch(e => console.error("Play error:", e));
           if (onReady) onReady();
         };
       }
       setError('');
     } catch (err) {
       console.error("Camera Access Error:", err);
-      setError("Camera permission denied or not available.");
+      // Fallback: try without constraints (e.g. laptop webcam)
+      try {
+        const fallbackStream = await navigator.mediaDevices.getUserMedia({ video: true });
+        setStream(fallbackStream);
+         if (videoRef.current) {
+          videoRef.current.srcObject = fallbackStream;
+          videoRef.current.onloadedmetadata = () => {
+             videoRef.current?.play();
+             if (onReady) onReady();
+          };
+        }
+      } catch (e2) {
+         setError("Camera permission denied or not available.");
+      }
     }
   };
 
@@ -54,18 +67,23 @@ export const CameraView = forwardRef<CameraHandle, CameraViewProps>(({ onReady }
     const video = videoRef.current;
     const canvas = canvasRef.current;
     
-    // Set canvas dimensions to match video
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    // Resize to a smaller dimension for faster API transmission
+    // 512px width is sufficient for general navigation/Q&A
+    const scale = 512 / video.videoWidth;
+    const w = 512;
+    const h = video.videoHeight * scale;
+
+    canvas.width = w;
+    canvas.height = h;
     
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
 
     // Draw video frame to canvas
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    ctx.drawImage(video, 0, 0, w, h);
     
-    // Return base64 JPEG
-    return canvas.toDataURL('image/jpeg', 0.6); // 0.6 quality for speed
+    // Return base64 JPEG with moderate compression
+    return canvas.toDataURL('image/jpeg', 0.7);
   };
 
   useImperativeHandle(ref, () => ({
